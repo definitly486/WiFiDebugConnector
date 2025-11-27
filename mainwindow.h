@@ -18,7 +18,7 @@ public:
     ~MainWindow();
 
 private slots:
-    void on_pushButton_getIp_clicked();
+    void on_pushButton_get_ip_clicked();
     void on_pushButton_connect_clicked();
     void on_pushButton_disconnect_clicked();
   

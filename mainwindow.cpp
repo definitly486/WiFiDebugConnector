@@ -9,25 +9,38 @@ MainWindow::MainWindow(QWidget *parent)
     ui->setupUi(this);
 
     connect(ui->pushButton_get_ip, &QPushButton::clicked,
-            this, &MainWindow::on_pushButton_getIp_clicked);
+            this, &MainWindow::on_pushButton_get_ip_clicked);
     connect(ui->pushButton_connect, &QPushButton::clicked,
             this, &MainWindow::on_pushButton_connect_clicked);
     connect(ui->pushButton_disconnect, &QPushButton::clicked,
             this, &MainWindow::on_pushButton_disconnect_clicked);
-    /* pushButton_silent отсутствует в .ui — строка удалена */
+  
+
 }
 
 MainWindow::~MainWindow()
 {
-    if (adbProcess && adbProcess->state() != QProcess::NotRunning)
-        adbProcess->kill();
-    delete ui;
+    if (oneShotProcess) {
+        if (oneShotProcess->state() != QProcess::NotRunning) {
+            oneShotProcess->terminate();
+            if (!oneShotProcess->waitForFinished(300)) {
+                oneShotProcess->kill();
+                oneShotProcess->waitForFinished(300);
+            }
+        }
+        delete oneShotProcess;
+        oneShotProcess = nullptr;
+    }
 }
+
 
 void MainWindow::ensureOneShotProcess()
 {
     if (!oneShotProcess) {
         oneShotProcess = new QProcess(this);
+
+        // чтобы процесс не остался зомби
+        oneShotProcess->setProcessChannelMode(QProcess::SeparateChannels);
     }
 }
 
@@ -52,37 +65,53 @@ void MainWindow::runAdbShellCommand(const QString &device,
                                     const QString &command,
                                     std::function<void(const QString&, const QString&)> callback)
 {
+    // Создаём процесс, если его ещё нет
     ensureOneShotProcess();
     QProcess *p = oneShotProcess;
 
-    // 1️⃣ — если процесс ещё выполняется, убиваем
+    // 0️⃣ — Полное убийство adb
+#ifdef Q_OS_UNIX
+    QProcess::execute("killall", {"-9", "adb"});
+#endif
+
+    // 1️⃣ — если процесс ещё работает — пытаемся завершить корректно
     if (p->state() != QProcess::NotRunning) {
-        p->kill();
-        p->waitForFinished(300);
+        p->terminate();
+        if (!p->waitForFinished(300)) {
+            p->kill();
+            p->waitForFinished(300);
+        }
     }
 
-    // 2️⃣ — сброс старых сигналов, иначе будет "дублирование" callback
+    // 2️⃣ — сброс сигналов, чтобы callback не вызывался несколько раз
     p->disconnect();
 
-    // 3️⃣ — собрали adb kill-server / start-server
+    // 3️⃣ — правильное завершение adb-сервера
     QProcess::execute("adb", {"kill-server"});
     QProcess::execute("adb", {"start-server"});
 
-    // 4️⃣ — формируем команду adb shell
+    // 4️⃣ — формируем аргументы
     QStringList args;
     if (!device.isEmpty())
         args << "-s" << device;
 
     args << "shell" << command;
 
+    // 5️⃣ — подключаем безопасный обработчик завершения
     connect(p, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
             this, [=](int, QProcess::ExitStatus) {
-                callback(p->readAllStandardOutput(), p->readAllStandardError());
-            });
 
-    // 5️⃣ — запускаем команду
+        const QString out = p->readAllStandardOutput();
+        const QString err = p->readAllStandardError();
+
+        callback(out, err);
+    });
+
+    // 6️⃣ — запуск
     p->start("adb", args);
 }
+
+
 
 
 
@@ -93,7 +122,7 @@ void MainWindow::setStatus(const QString &msg, int timeoutMs)
 
 // --- BUTTON HANDLERS --------------------------------------------------------
 
-void MainWindow::on_pushButton_getIp_clicked()
+void MainWindow::on_pushButton_get_ip_clicked()
 {
     setStatus("Получаем IP...");
 
