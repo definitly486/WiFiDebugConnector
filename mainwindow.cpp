@@ -199,24 +199,19 @@ void MainWindow::logCmd(const QString &cmd)
 
 void MainWindow::closeEvent(QCloseEvent *event)
 {
-    // Жёстко убиваем все adb-процессы, которые мы запускали
+    // 1. Сначала принудительно отрубаем всё, что связано с adb
+    QProcess::execute("killall", {"-9", "adb"});           // Linux/macOS
+    // или на Windows:
+    // QProcess::execute("taskkill", {"/F", "/IM", "adb.exe"});
+
+    // 2. Убиваем свои QProcess-ы (на всякий случай)
     for (QProcess *p : std::as_const(adbProcesses)) {
         if (p && p->state() != QProcess::NotRunning) {
-            p->terminate();
-            if (!p->waitForFinished(300)) {
-                p->kill();  // если не умер — kill -9
-            }
+            p->kill();
+            p->waitForFinished(300);
         }
     }
-
-    // Очищаем список
     adbProcesses.clear();
 
-    // Даём Qt время всё почистить и закрываемся
-    QTimer::singleShot(100, qApp, [event]() {
-        event->accept();
-        qApp->quit();
-    });
-
-    event->ignore();  // не закрываем окно сразу — ждём таймер
+    event->accept();
 }
