@@ -151,7 +151,7 @@ logInfo("Настройка TCP/IP режима...");
         // 2. Даём устройству время переключиться в tcpip
         QTimer::singleShot(600, this, [this, ip]() {
 
-            runAdb({ "adb", "connect", ip },
+            runAdb({  "connect", ip },
                    [this, ip](QString out, QString err){
 
                 QString res = out + err;
