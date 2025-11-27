@@ -30,6 +30,11 @@ private:
     // Отображение сообщения в статус-баре
     void setStatus(const QString &msg, int timeoutMs = 2000);
 
+void logInfo(const QString &msg);
+void logError(const QString &msg);
+void logCmd(const QString &cmd);
+
+
 private slots:
     void on_pushButton_get_ip_clicked();
     void on_pushButton_connect_clicked();

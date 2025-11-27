@@ -36,20 +36,32 @@ void MainWindow::runAdb(const QStringList &args,
     QProcess *p = new QProcess(this);
     p->setProcessChannelMode(QProcess::SeparateChannels);
 
-  connect(p,
-        QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
-        this,
-        [p, callback](int /*exitCode*/, QProcess::ExitStatus /*status*/) {
+    logCmd(args.join(" "));  // ЛОГИРУЕМ КОМАНДУ
 
-            QString out = p->readAllStandardOutput();
-            QString err = p->readAllStandardError();
+    connect(p,
+            QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
+            this,
+            [this, p, callback](int exitCode, QProcess::ExitStatus status){
 
-            p->deleteLater();
-            callback(out, err);
-        });
+        QString out = p->readAllStandardOutput();
+        QString err = p->readAllStandardError();
+
+        if (!out.trimmed().isEmpty())
+            logInfo(out.trimmed());
+
+        if (!err.trimmed().isEmpty())
+            logError(err.trimmed());
+
+        if (exitCode != 0)
+            logError("Exit code: " + QString::number(exitCode));
+
+        p->deleteLater();
+        callback(out, err);
+    });
 
     p->start("adb", args);
 }
+
 
 /// Поиск USB-устройства
 QString MainWindow::findUsbDeviceId()
@@ -90,6 +102,8 @@ void MainWindow::on_pushButton_get_ip_clicked()
         return;
     }
 
+ logInfo("Получение IP через USB…");
+
     runAdb({ "-s", usb, "shell",
              "ip addr show wlan0 | awk '/inet /{print $2}' | cut -d/ -f1"
            },
@@ -109,6 +123,9 @@ void MainWindow::on_pushButton_get_ip_clicked()
 /// Подключение по Wi-Fi
 void MainWindow::on_pushButton_connect_clicked()
 {
+
+logInfo("Настройка TCP/IP режима...");
+
     QString ip = ui->lineEdit_ip->text().trimmed();
     if (ip.isEmpty()) {
         setStatus("Введите IP или нажмите 'Получить IP'");
@@ -154,6 +171,8 @@ void MainWindow::on_pushButton_connect_clicked()
 /// Отключение Wi-Fi соединения
 void MainWindow::on_pushButton_disconnect_clicked()
 {
+
+logInfo("Отключение устройства...");
     runAdb({ "disconnect" },
            [this](QString out, QString err) {
 
@@ -164,3 +183,22 @@ void MainWindow::on_pushButton_disconnect_clicked()
         setStatus("Отключено");
     });
 }
+
+void MainWindow::logInfo(const QString &msg)
+{
+    ui->textEdit_log->append(
+        "<span style='color:#2ECC71;'>🟢 " + msg + "</span>");
+}
+
+void MainWindow::logError(const QString &msg)
+{
+    ui->textEdit_log->append(
+        "<span style='color:#E74C3C;'>🔴 " + msg + "</span>");
+}
+
+void MainWindow::logCmd(const QString &cmd)
+{
+    ui->textEdit_log->append(
+        "<span style='color:#F1C40F;'>💻 adb " + cmd + "</span>");
+}
+
