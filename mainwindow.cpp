@@ -1,80 +1,179 @@
-// mainwindow.cpp
 #include "mainwindow.h"
 #include "ui_mainwindow.h"
+#include <QRegularExpression>
 #include <QDebug>
 
 MainWindow::MainWindow(QWidget *parent)
-    : QMainWindow(parent)
-    , ui(new Ui::MainWindow)
+    : QMainWindow(parent), ui(new Ui::MainWindow), adbProcess(new QProcess(this)), oneShotProcess(nullptr)
 {
     ui->setupUi(this);
+
+    connect(ui->pushButton_get_ip, &QPushButton::clicked,
+            this, &MainWindow::on_pushButton_getIp_clicked);
+    connect(ui->pushButton_connect, &QPushButton::clicked,
+            this, &MainWindow::on_pushButton_connect_clicked);
+    connect(ui->pushButton_disconnect, &QPushButton::clicked,
+            this, &MainWindow::on_pushButton_disconnect_clicked);
+    /* pushButton_silent отсутствует в .ui — строка удалена */
 }
 
 MainWindow::~MainWindow()
 {
-    if (adbProcess) {
+    if (adbProcess && adbProcess->state() != QProcess::NotRunning)
         adbProcess->kill();
-        adbProcess->deleteLater();
-    }
     delete ui;
 }
 
-void MainWindow::on_pushButton_clicked()
+void MainWindow::ensureOneShotProcess()
 {
-    // Если уже запущен процесс — убиваем старый
-    if (adbProcess && adbProcess->state() != QProcess::NotRunning) {
-        adbProcess->kill();
-    } else if (!adbProcess) {
-        adbProcess = new QProcess(this);
+    if (!oneShotProcess) {
+        oneShotProcess = new QProcess(this);
     }
-
-    // Подключаем сигналы (один раз достаточно, но можно и каждый раз)
-    connect(adbProcess, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
-            this, [=](int exitCode, QProcess::ExitStatus exitStatus) {
-                Q_UNUSED(exitCode);
-                Q_UNUSED(exitStatus);
-
-                QString output = adbProcess->readAllStandardOutput().trimmed();
-                QStringList lines = output.split('\n', Qt::SkipEmptyParts);
-
-                if (!lines.isEmpty()) {
-                    QString ip = lines.first(); // берём первую строку (обычно одна)
-                    ui->lineEdit_ip->setText(ip);
-                    statusBar()->showMessage("IP получен: " + ip, 3000);
-                } else {
-                    ui->lineEdit_ip->setText("Нет IP");
-                    statusBar()->showMessage("wlan0 не найден или нет IP", 5000);
-                }
-            });
-
-    connect(adbProcess, &QProcess::errorOccurred, this, [=](QProcess::ProcessError error) {
-        Q_UNUSED(error);
-        ui->lineEdit_ip->setText("Ошибка ADB");
-        statusBar()->showMessage("ADB не запущен или устройство не подключено", 7000);
-    });
-
-    // Запускаем команду
-    adbProcess->start("adb", QStringList() << "shell"
-                                           << "ip addr show wlan0 2>/dev/null | awk '/inet /{print $2}' | cut -d/ -f1");
 }
 
-void MainWindow::on_pushButton_2_clicked()
+QString MainWindow::findUsbDeviceId()
 {
-    // Здесь будет подключение по IP, например:
-    QString ip = ui->lineEdit_ip->text().trimmed();
-    if (ip.isEmpty() || ip == "Нет IP" || ip == "Ошибка ADB") {
-        statusBar()->showMessage("Сначала получите IP", 3000);
+    QProcess p;
+    p.start("adb", {"devices"});
+    p.waitForFinished();
+
+    QString out = p.readAllStandardOutput();
+    QStringList lines = out.split("\n", Qt::SkipEmptyParts);
+
+    for (const QString &l : lines) {
+        if (l.contains("	device") && !l.contains(":")) {
+            return l.split("\t").first(); // Исправлено на "\t"
+        }
+    }
+    return "";
+}
+
+void MainWindow::runAdbShellCommand(const QString &device,
+                                    const QString &command,
+                                    std::function<void(const QString&, const QString&)> callback)
+{
+    ensureOneShotProcess();
+    QProcess *p = oneShotProcess;
+
+    // 1️⃣ — если процесс ещё выполняется, убиваем
+    if (p->state() != QProcess::NotRunning) {
+        p->kill();
+        p->waitForFinished(300);
+    }
+
+    // 2️⃣ — сброс старых сигналов, иначе будет "дублирование" callback
+    p->disconnect();
+
+    // 3️⃣ — собрали adb kill-server / start-server
+    QProcess::execute("adb", {"kill-server"});
+    QProcess::execute("adb", {"start-server"});
+
+    // 4️⃣ — формируем команду adb shell
+    QStringList args;
+    if (!device.isEmpty())
+        args << "-s" << device;
+
+    args << "shell" << command;
+
+    connect(p, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
+            this, [=](int, QProcess::ExitStatus) {
+                callback(p->readAllStandardOutput(), p->readAllStandardError());
+            });
+
+    // 5️⃣ — запускаем команду
+    p->start("adb", args);
+}
+
+
+
+void MainWindow::setStatus(const QString &msg, int timeoutMs)
+{
+    statusBar()->showMessage(msg, timeoutMs);
+}
+
+// --- BUTTON HANDLERS --------------------------------------------------------
+
+void MainWindow::on_pushButton_getIp_clicked()
+{
+    setStatus("Получаем IP...");
+
+    currentUsbDeviceId = findUsbDeviceId();
+    if (currentUsbDeviceId.isEmpty()) {
+        setStatus("USB устройство не найдено");
         return;
     }
 
-    QProcess::execute("adb", QStringList() << "tcpip" << "5555");
-    QProcess::execute("adb", QStringList() << "connect" << ip + ":5555");
+    runAdbShellCommand(currentUsbDeviceId,
+        "ip addr show wlan0 | awk '/inet /{print $2}' | cut -d/ -f1",
+        [&](const QString &out, const QString &err) {
+            QString ip = out.trimmed();
+            if (ip.isEmpty()) {
+                setStatus("Не удалось получить IP. Wi-Fi включен?");
+                return;
+            }
 
-    statusBar()->showMessage("Пытаемся подключиться к " + ip + ":5555", 5000);
+            ui->lineEdit_ip->setText(ip);
+            setStatus("IP получен: " + ip);
+        }
+    );
 }
 
-void MainWindow::on_lineEdit_ip_textChanged(const QString &arg1)
+void MainWindow::on_pushButton_connect_clicked()
 {
-    Q_UNUSED(arg1);
-    // Можно добавить подсветку валидного IP и т.д.
+    QString ip = ui->lineEdit_ip->text().trimmed();
+    if (ip.isEmpty()) {
+        setStatus("Введите IP или нажмите 'Получить IP'");
+        return;
+    }
+    if (!ip.contains(':')) ip += ":5555";
+
+    currentUsbDeviceId = findUsbDeviceId();
+    if (currentUsbDeviceId.isEmpty()) {
+        setStatus("USB устройство не найдено");
+        return;
+    }
+
+    // Enable TCP/IP mode
+    QProcess::execute("adb", {"-s", currentUsbDeviceId, "tcpip", "5555"});
+
+    QTimer::singleShot(800, this, [=]() {
+        ensureOneShotProcess();
+        QProcess *p = oneShotProcess;
+
+        connect(p, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
+                this, [=](int, QProcess::ExitStatus){
+            QString out = p->readAllStandardOutput() + p->readAllStandardError();
+
+            if (out.contains("connected") || out.contains("already")) {
+                ui->checkBox_wireless->setChecked(true);
+                setStatus("Подключено к " + ip);
+            } else {
+                ui->checkBox_wireless->setChecked(false);
+                setStatus("Ошибка подключения: " + out);
+            }
+        });
+
+        p->start("adb", {"connect", ip});
+    });
+}
+
+void MainWindow::on_pushButton_disconnect_clicked()
+{
+    ensureOneShotProcess();
+    QProcess *p = oneShotProcess;
+
+    if (p->state() != QProcess::NotRunning) {
+        p->kill();
+        p->waitForFinished(300);
+    }
+
+    p->disconnect();
+
+    connect(p, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
+            this, [=]{
+                ui->checkBox_wireless->setChecked(false);
+                setStatus("Отключено");
+            });
+
+    p->start("adb", {"disconnect"});
 }

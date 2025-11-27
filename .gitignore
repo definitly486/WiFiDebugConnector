@@ -11,3 +11,5 @@
 /qrc_resources.cpp
 /qrc_resources.o
 /ui_mainwindow.h
+/qrc_resource.cpp
+/qrc_resource.o
