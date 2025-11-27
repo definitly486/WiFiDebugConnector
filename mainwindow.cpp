@@ -5,6 +5,8 @@
 #include <QTimer>
 #include <QDebug>
 #include <QRegularExpression>
+#include <QCloseEvent>          // ЭТО РЕШАЕТ ВСЕ ОШИБКИ С event->accept()/ignore()
+
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent),
@@ -29,34 +31,27 @@ MainWindow::~MainWindow()
  *  ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
  * --------------------------------------------------------------------*/
 
-/// Запуск ADB с callback’ом, каждый вызов — свой процесс (безопасно)
 void MainWindow::runAdb(const QStringList &args,
                         std::function<void(QString,QString)> callback)
 {
     QProcess *p = new QProcess(this);
-    p->setProcessChannelMode(QProcess::SeparateChannels);
+    adbProcesses << p;                          // ← запоминаем
 
-    logCmd(args.join(" "));  // ЛОГИРУЕМ КОМАНДУ
+    p->setProcessChannelMode(QProcess::MergedChannels);
 
-    connect(p,
-            QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
-            this,
-            [this, p, callback](int exitCode, QProcess::ExitStatus status){
+    logCmd("adb " + args.join(' '));
 
-        QString out = p->readAllStandardOutput();
-        QString err = p->readAllStandardError();
+    connect(p, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
+            this, [this, p, callback](int, QProcess::ExitStatus) {
+        QString output = p->readAllStandardOutput().trimmed();
 
-        if (!out.trimmed().isEmpty())
-            logInfo(out.trimmed());
+        if (!output.isEmpty())
+            logInfo(output);
 
-        if (!err.trimmed().isEmpty())
-            logError(err.trimmed());
+        callback(output, p->readAllStandardError());
 
-        if (exitCode != 0)
-            logError("Exit code: " + QString::number(exitCode));
-
+        adbProcesses.removeOne(p);              // ← убираем из списка
         p->deleteLater();
-        callback(out, err);
     });
 
     p->start("adb", args);
@@ -202,3 +197,26 @@ void MainWindow::logCmd(const QString &cmd)
         "<span style='color:#F1C40F;'>💻 adb " + cmd + "</span>");
 }
 
+void MainWindow::closeEvent(QCloseEvent *event)
+{
+    // Жёстко убиваем все adb-процессы, которые мы запускали
+    for (QProcess *p : std::as_const(adbProcesses)) {
+        if (p && p->state() != QProcess::NotRunning) {
+            p->terminate();
+            if (!p->waitForFinished(300)) {
+                p->kill();  // если не умер — kill -9
+            }
+        }
+    }
+
+    // Очищаем список
+    adbProcesses.clear();
+
+    // Даём Qt время всё почистить и закрываемся
+    QTimer::singleShot(100, qApp, [event]() {
+        event->accept();
+        qApp->quit();
+    });
+
+    event->ignore();  // не закрываем окно сразу — ждём таймер
+}

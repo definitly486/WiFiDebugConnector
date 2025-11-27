@@ -3,6 +3,7 @@
 
 #include <QMainWindow>
 #include <functional>
+#include <QProcess>
 
 QT_BEGIN_NAMESPACE
 namespace Ui { class MainWindow; }
@@ -19,6 +20,10 @@ public:
 private:
     Ui::MainWindow *ui;
 
+protected:
+    void closeEvent(QCloseEvent *event) override;
+
+
 private:
     // Универсальная функция безопасного запуска adb
     void runAdb(const QStringList &args,
@@ -33,6 +38,7 @@ private:
 void logInfo(const QString &msg);
 void logError(const QString &msg);
 void logCmd(const QString &cmd);
+QList<QProcess*> adbProcesses;
 
 
 private slots:
